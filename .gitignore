@@ -4,6 +4,9 @@
 # Banco de dados local (criado em tempo de execução por app.py)
 vagas_gupy.db
 
+# Log do bot em produção (ver DEPLOY.md)
+bot.log
+
 # Ambientes virtuais
 venv/
 .venv/

@@ -1,0 +1,12 @@
+[Unit]
+Description=Bot de vagas Gupy - Belo Horizonte (execução única, disparada pelo timer)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/vagas-gupy-mg-telegram-bot
+ExecStart=/home/ubuntu/vagas-gupy-mg-telegram-bot/venv/bin/python app.py
+StandardOutput=append:/home/ubuntu/vagas-gupy-mg-telegram-bot/bot.log
+StandardError=append:/home/ubuntu/vagas-gupy-mg-telegram-bot/bot.log

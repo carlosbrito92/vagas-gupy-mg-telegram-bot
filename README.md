@@ -120,16 +120,19 @@ CIDADES_ALVO = [
 ```
 
 
-## 🔄 Execução contínua vs. Agendada
+## 🔄 Execução única (agendada externamente)
 
-Este código foi modificado para rodar **em loop infinito**, diferente do original que rodava uma vez e parava.
+`python app.py` roda **uma vez e termina** — sempre checa comandos pendentes do
+Telegram e só faz uma nova busca de vagas se já passou `INTERVALO_BUSCA_SEGUNDOS`
+(5 min por padrão) desde a última busca registrada. Pra rodar 24/7, precisa disparar
+essa execução periodicamente por fora — veja as opções abaixo.
 
-- **Loop padrão**: verifica a cada 5 minutos
-- **Para parar**: `Ctrl+C` (ele avisa o grupo antes de sair)
-- **Para rodar em segundo plano** (Linux/macOS): `nohup python app.py &`
-- **Para Windows**: pode usar Task Scheduler ou manter o terminal aberto
-
-Se quiser o comportamento original (uma execução e para), basta remover o `while` do `main()`.
+- **Manual/teste**: rodar `python app.py` direto já funciona pra um teste pontual.
+- **Deploy contínuo**, duas opções documentadas:
+  - [`DEPLOY.md`](DEPLOY.md) — VM gratuita da Oracle Cloud, script disparado
+    periodicamente via `cron`/`systemd timer` no próprio Linux.
+  - [`DEPLOY-render.md`](DEPLOY-render.md) — Render Cron Job (sem precisar de VM),
+    com o banco SQLite persistido no Cloudflare R2 entre execuções.
 
 ---
 
