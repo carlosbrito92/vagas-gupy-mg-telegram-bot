@@ -56,9 +56,9 @@ Tudo com **links diretos** e formatação limpa para mobile e pra ser prático.
 | Consumo RAM | ~50MB | 500MB+ |
 | Velocidade por vaga | < 0.5s | 3-5s |
 | Controle de duplicatas | SQLite persistente | Memória volátil |
-| Execução contínua | Loop com signal handler | Cron job / agendador |
+| Execução | Uma chamada por vez, disparada por cron/timer externo | Processo próprio sempre rodando |
 
-**Tratamento de interrupção incluso**: se o bot for parado de propósito (Ctrl+C) ou por alguma problema na aplicação, ele avisa o grupo que entrou em manutenção e avisa quando voltar.
+**Sem estado em memória entre execuções**: cada chamada de `python app.py` roda, faz o trabalho e termina — todo o estado (vagas já enviadas, áreas dos usuários, timestamps) fica no SQLite, não em variáveis do processo.
 
 ---
 
@@ -96,16 +96,59 @@ Pronto. Ele vai começar a varrer e enviar vagas.
 
 ---
 
+## 🔧 Fazendo o bot pra você (não só rodando o meu)
+
+Rodar o passo a passo acima já funciona, mas usa **seu próprio bot e grupo** —
+não dá pra reaproveitar `TELEGRAM_TOKEN`/`CHAT_ID_GRUPO` de outra pessoa. Veja como
+conseguir cada campo do `.env`:
+
+### `TELEGRAM_TOKEN`
+1. Fala com o **[@BotFather](https://t.me/BotFather)** no Telegram.
+2. `/newbot`, escolhe nome e username (precisa terminar em `bot`).
+3. Ele te devolve o token — formato `123456789:AAF...` — copia pro `.env`.
+
+### `CHAT_ID_GRUPO`
+1. Cria um grupo no Telegram e adiciona seu bot nele.
+2. Manda qualquer mensagem no grupo.
+3. Abre no navegador (com o token do passo anterior):
+   ```
+   https://api.telegram.org/bot<SEU_TOKEN>/getUpdates
+   ```
+   (troca `<SEU_TOKEN>` pelo token real, sem os `< >`)
+4. Procura `"chat":{"id":...}` na resposta — esse número (geralmente negativo,
+   tipo `-100...`) é o `CHAT_ID_GRUPO`.
+
+Se vier `"result":[]` vazio, manda outra mensagem no grupo e recarrega a página —
+o Telegram só mostra mensagens recentes ainda não confirmadas.
+
+### Campos opcionais (`R2_*`)
+Só necessários se for rodar como **cron job** (Render, por exemplo) em vez de
+processo contínuo numa VM — ver [`DEPLOY-render.md`](DEPLOY-render.md) pra saber por
+quê e como criar o bucket. Rodando local ou numa VM com disco persistente, pode
+deixar essas 4 linhas vazias.
+
+| Variável | Obrigatória? | Onde conseguir |
+|---|---|---|
+| `TELEGRAM_TOKEN` | Sim | @BotFather, comando `/newbot` |
+| `CHAT_ID_GRUPO` | Sim | `getUpdates` do seu bot, campo `chat.id` |
+| `R2_ACCOUNT_ID` | Só p/ deploy em cron job | Painel R2 da Cloudflare |
+| `R2_ACCESS_KEY_ID` | Só p/ deploy em cron job | R2 → Manage API Tokens |
+| `R2_SECRET_ACCESS_KEY` | Só p/ deploy em cron job | R2 → Manage API Tokens |
+| `R2_BUCKET_NAME` | Só p/ deploy em cron job | Nome do bucket que você criar |
+
+Depois disso, se quiser vagas de outra cidade/estado em vez de BH, veja a seção
+seguinte.
+
+---
+
 ## ⚙️ Quer mudar a região de busca? Fácil
 
 A API da Gupy só filtra por **estado inteiro**, não por cidade. Por isso o bot busca `state: 'Minas Gerais'` e depois filtra a cidade no código, dentro de `CIDADES_ALVO`.
 
-Para mudar de estado, edite o `state` em `filtros_de_busca` (`app.py`, dentro de `buscar_vagas_gupy()`):
+Para mudar de estado, edite o `state` em `params_base` (`app.py`, dentro de `buscar_vagas_gupy()`):
 
 ```python
-filtros_de_busca = [
-    {"nome": "BELO HORIZONTE E REGIÃO", "params": {'state': 'Minas Gerais', 'limit': 10}}
-]
+params_base = {'state': 'Minas Gerais', 'limit': 10}
 ```
 
 Para mudar as cidades-alvo dentro do estado, edite a lista `CIDADES_ALVO` no topo de `app.py`:
@@ -141,9 +184,13 @@ essa execução periodicamente por fora — veja as opções abaixo.
 ```
 .
 ├── app.py               # Código principal do bot
+├── areas.py             # Dicionário de áreas/keywords pro filtro /definir
 ├── requirements.txt     # Dependências
 ├── .env.example         # Modelo de variáveis de ambiente
 ├── .gitignore
+├── deploy/               # Templates de deploy (systemd service+timer, script)
+├── DEPLOY.md             # Guia de deploy: Oracle Cloud + systemd timer
+├── DEPLOY-render.md      # Guia de deploy: Render Cron Job + Cloudflare R2
 ├── vagas_gupy.db        # Banco SQLite (criado automaticamente, ignorado no git)
 ├── .env                 # Suas credenciais (não comitar!)
 └── README.md            # Este arquivo
