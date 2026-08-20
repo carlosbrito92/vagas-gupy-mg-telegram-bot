@@ -48,6 +48,29 @@ Tudo com **links diretos** e formatação limpa para mobile e pra ser prático.
 
 ---
 
+## 💬 Comandos do bot
+
+Além do grupo padrão (que recebe **todas** as vagas de BH e região, sem filtro),
+qualquer pessoa pode conversar direto com o bot (ou mencionar num grupo onde ele
+esteja) pra escolher receber só vagas de áreas específicas:
+
+| Comando | O que faz |
+|---|---|
+| `/areas` | Lista as áreas disponíveis pra filtro |
+| `/definir área1, área2` | Define suas áreas de interesse (substitui as anteriores) |
+| `/minhasareas` | Mostra suas áreas configuradas atualmente |
+| `/parar` | Cancela o recebimento de vagas |
+| `/ajuda` | Mostra a lista de comandos |
+
+Exemplo: `/definir dados e ia, desenvolvimento`
+
+Áreas disponíveis hoje: `administrativo`, `comercial e vendas`, `dados e ia`,
+`desenvolvimento`, `financeiro`, `fiscal`, `infra cloud e seguranca`, `juridico`,
+`logistica`, `marketing`, `produto e gestao tech`, `rh`. A classificação olha só o
+**título** da vaga (lista completa de keywords em `areas.py`).
+
+---
+
 ## 🛡️ Diferenciais técnicos (a parte que interessa pra quem programa)
 
 | Característica | Abordagem aqui | Abordagem comum |
