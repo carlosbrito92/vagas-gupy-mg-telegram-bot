@@ -1,4 +1,3 @@
-
 # 🤖 BH Jobs Scout — Bot de Monitoramento Gupy no Telegram
 
 [![Python Version](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/)
@@ -79,9 +78,9 @@ Exemplo: `/definir dados e ia, desenvolvimento`
 | Consumo RAM | ~50MB | 500MB+ |
 | Velocidade por vaga | < 0.5s | 3-5s |
 | Controle de duplicatas | SQLite persistente | Memória volátil |
-| Execução | Uma chamada por vez, disparada por cron/timer externo | Processo próprio sempre rodando |
+| Execução | Processo único, sempre rodando (loop) | Reabrir navegador a cada consulta |
 
-**Sem estado em memória entre execuções**: cada chamada de `python app.py` roda, faz o trabalho e termina — todo o estado (vagas já enviadas, áreas dos usuários, timestamps) fica no SQLite, não em variáveis do processo.
+**Processo contínuo, sem depender de disparo externo**: `python app.py` sobe uma vez e fica rodando — a cada poucos segundos checa comandos novos no Telegram, e a cada 5 minutos varre vagas novas. Todo o estado (vagas já enviadas, áreas dos usuários, timestamps) fica no SQLite local, que persiste entre reinícios do processo.
 
 ---
 
@@ -115,7 +114,10 @@ CHAT_ID_GRUPO=numero_do_grupo_aqui
 python app.py
 ```
 
-Pronto. Ele vai começar a varrer e enviar vagas.
+Pronto. O processo fica rodando em primeiro plano (não termina sozinho) e vai
+começar a varrer e enviar vagas. Pra parar, `Ctrl+C` — ele avisa no grupo que
+entrou em manutenção antes de encerrar. Pra rodar 24/7 sem depender do seu
+terminal aberto, veja a seção de deploy mais abaixo.
 
 ---
 
@@ -144,20 +146,16 @@ conseguir cada campo do `.env`:
 Se vier `"result":[]` vazio, manda outra mensagem no grupo e recarrega a página —
 o Telegram só mostra mensagens recentes ainda não confirmadas.
 
-### Campos opcionais (`R2_*`)
-Só necessários se for rodar como **cron job** (Render, por exemplo) em vez de
-processo contínuo numa VM — ver [`DEPLOY-render.md`](DEPLOY-render.md) pra saber por
-quê e como criar o bucket. Rodando local ou numa VM com disco persistente, pode
-deixar essas 4 linhas vazias.
+### Campos do `.env`
 
 | Variável | Obrigatória? | Onde conseguir |
 |---|---|---|
 | `TELEGRAM_TOKEN` | Sim | @BotFather, comando `/newbot` |
 | `CHAT_ID_GRUPO` | Sim | `getUpdates` do seu bot, campo `chat.id` |
-| `R2_ACCOUNT_ID` | Só p/ deploy em cron job | Painel R2 da Cloudflare |
-| `R2_ACCESS_KEY_ID` | Só p/ deploy em cron job | R2 → Manage API Tokens |
-| `R2_SECRET_ACCESS_KEY` | Só p/ deploy em cron job | R2 → Manage API Tokens |
-| `R2_BUCKET_NAME` | Só p/ deploy em cron job | Nome do bucket que você criar |
+
+Não há mais campos de R2/Cloudflare — essa integração foi removida (ver
+`PROGRESSO.md` para o histórico de por que ela existiu brevemente e por que
+saiu).
 
 Depois disso, se quiser vagas de outra cidade/estado em vez de BH, veja a seção
 seguinte.
@@ -186,19 +184,25 @@ CIDADES_ALVO = [
 ```
 
 
-## 🔄 Execução única (agendada externamente)
+## 🔄 Rodando 24/7 (deploy)
 
-`python app.py` roda **uma vez e termina** — sempre checa comandos pendentes do
-Telegram e só faz uma nova busca de vagas se já passou `INTERVALO_BUSCA_SEGUNDOS`
-(5 min por padrão) desde a última busca registrada. Pra rodar 24/7, precisa disparar
-essa execução periodicamente por fora — veja as opções abaixo.
+`python app.py` é um processo contínuo: sobe, entra num loop e fica rodando até
+receber `Ctrl+C` (ou o processo ser encerrado por fora). Ele mesmo cuida do
+intervalo entre buscas (5 min por padrão) e do polling de comandos do Telegram
+(a cada poucos segundos) — não precisa de nenhum agendador externo disparando
+execuções.
 
-- **Manual/teste**: rodar `python app.py` direto já funciona pra um teste pontual.
-- **Deploy contínuo**, duas opções documentadas:
-  - [`DEPLOY.md`](DEPLOY.md) — VM gratuita da Oracle Cloud, script disparado
-    periodicamente via `cron`/`systemd timer` no próprio Linux.
-  - [`DEPLOY-render.md`](DEPLOY-render.md) — Render Cron Job (sem precisar de VM),
-    com o banco SQLite persistido no Cloudflare R2 entre execuções.
+Isso também significa que ele só continua rodando enquanto o processo existir.
+Pra manter isso de pé 24/7 sem depender do seu terminal aberto, veja
+[`DEPLOY.md`](DEPLOY.md) — VM gratuita da Oracle Cloud, rodando o bot como
+serviço `systemd` (reinicia sozinho se cair).
+
+> **Nota histórica:** este projeto teve, por um período curto, uma versão
+> reescrita para rodar como execução única disparada por cron (pensada para
+> Render Cron Job + Cloudflare R2 para persistir o banco entre execuções).
+> Essa abordagem foi abandonada — Render Cron Jobs não têm tier gratuito, e o
+> modelo quebrava a resposta em tempo real aos comandos do Telegram. Detalhes
+> em `PROGRESSO.md`.
 
 ---
 
@@ -206,14 +210,15 @@ essa execução periodicamente por fora — veja as opções abaixo.
 
 ```
 .
-├── app.py               # Código principal do bot
+├── app.py               # Código principal do bot (loop contínuo)
 ├── areas.py             # Dicionário de áreas/keywords pro filtro /definir
 ├── requirements.txt     # Dependências
 ├── .env.example         # Modelo de variáveis de ambiente
 ├── .gitignore
-├── deploy/               # Templates de deploy (systemd service+timer, script)
-├── DEPLOY.md             # Guia de deploy: Oracle Cloud + systemd timer
-├── DEPLOY-render.md      # Guia de deploy: Render Cron Job + Cloudflare R2
+├── deploy/               # Templates de deploy (systemd service, script)
+├── DEPLOY.md             # Guia de deploy: Oracle Cloud + systemd
+├── PROGRESSO.md          # Status real do projeto e histórico de decisões
+├── PLANO_MELHORIAS.md    # Roadmap de melhorias futuras
 ├── vagas_gupy.db        # Banco SQLite (criado automaticamente, ignorado no git)
 ├── .env                 # Suas credenciais (não comitar!)
 └── README.md            # Este arquivo
@@ -244,4 +249,3 @@ A partir dessa versão para São Paulo, o bot foi **readaptado para Belo Horizon
 ## 📄 Licença
 
 MIT — Use, modifique, compartilhe. Só não esquece de dar os créditos, combinado?
-

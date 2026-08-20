@@ -2,8 +2,9 @@ import os
 import time
 import sqlite3
 import requests
-import boto3
 import unicodedata
+import signal
+import sys
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 
@@ -19,50 +20,6 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 # vagas de BH e região, sem filtro de área (comportamento antigo, tipo "firehose").
 # Além disso, qualquer chat que rodar /definir passa a receber só as áreas escolhidas.
 CHAT_ID_PADRAO = os.getenv("CHAT_ID_GRUPO")
-
-# --- R2 (Cloudflare) — persiste vagas_gupy.db entre execuções do cron job ---
-# Cron job free do Render não garante disco persistente entre execuções, então
-# o banco SQLite é baixado do R2 no início e reenviado atualizado no final.
-R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID")
-R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID")
-R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY")
-R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME")
-R2_OBJETO_BANCO = "vagas_gupy.db"
-
-
-def r2_habilitado():
-    return all([R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME])
-
-
-def r2_client():
-    return boto3.client(
-        "s3",
-        endpoint_url=f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com",
-        aws_access_key_id=R2_ACCESS_KEY_ID,
-        aws_secret_access_key=R2_SECRET_ACCESS_KEY,
-        region_name="auto",
-    )
-
-
-def baixar_banco_do_r2():
-    """Baixa o vagas_gupy.db do R2 para o disco local, se existir. Sem R2 configurado, roda só com o disco local (modo antigo)."""
-    if not r2_habilitado():
-        return
-    try:
-        r2_client().download_file(R2_BUCKET_NAME, R2_OBJETO_BANCO, CAMINHO_BANCO)
-        print("☁️  Banco baixado do R2.")
-    except Exception as e:
-        print(f"ℹ️  Não foi possível baixar o banco do R2 (pode ser a primeira execução): {e}")
-
-
-def enviar_banco_para_r2():
-    if not r2_habilitado():
-        return
-    try:
-        r2_client().upload_file(CAMINHO_BANCO, R2_BUCKET_NAME, R2_OBJETO_BANCO)
-        print("☁️  Banco atualizado enviado para o R2.")
-    except Exception as e:
-        print(f"⚠️ Erro ao enviar o banco para o R2: {e}")
 
 TRADUCAO_MODELO = {
     "on-site": "Presencial",
@@ -100,6 +57,9 @@ INTERVALO_ENTRE_ENVIOS_SEGUNDOS = 3
 INTERVALO_LIMPEZA_DIAS = 30  # de quanto em quanto tempo apaga vagas_enviadas antigas
 DIAS_RETENCAO_VAGAS_ENVIADAS = 30  # idade a partir da qual uma vaga enviada é apagada
 
+
+# Flag para controle de interrupção (Ctrl+C)
+executando = True
 
 # --- 2. NORMALIZAÇÃO DE TEXTO E CLASSIFICAÇÃO DE ÁREA ---
 def normalizar(texto):
@@ -313,6 +273,22 @@ def garantir_primeira_ativacao(cursor, conn):
     )
     conn.commit()
 
+def enviar_mensagem_manutencao():
+    mensagem = "⚠️ <b>MANUTENÇÃO</b>\n\nO robô de vagas está passando por manutenção no momento. Em breve retornaremos com as atualizações!"
+    if CHAT_ID_PADRAO:
+        enviar_mensagem_telegram(CHAT_ID_PADRAO, mensagem)
+
+
+def signal_handler(signum, frame):
+    global executando
+    print("\n🛑 Recebido sinal de interrupção. Encerrando o bot...")
+    executando = False
+    enviar_mensagem_manutencao()
+    sys.exit(0)
+
+
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 def configurar_comandos_bot():
     """Registra os comandos no Telegram para aparecerem como sugestão ao digitar '/'."""
@@ -608,47 +584,51 @@ def buscar_vagas_gupy(cursor, conn):
     return total_enviados
 
 
-# --- 7. EXECUÇÃO ÚNICA (disparada pelo cron job) ---
+# --- 7. LOOP PRINCIPAL ---
 def main():
+    global executando
+
     if not TOKEN:
         print("❌ ERRO: Token do Telegram não encontrado no arquivo .env!")
         return
 
-    baixar_banco_do_r2()
     conn, cursor = iniciar_banco()
 
-    print("🤖 Bot de vagas Gupy — execução única")
-    print(f"⏰ Intervalo mínimo entre buscas: {INTERVALO_BUSCA_SEGUNDOS // 60} minutos\n")
+    print("🤖 Bot de vagas Gupy iniciado!")
+    print("📌 Monitorando vagas para Belo Horizonte e região metropolitana")
+    print(f"⏰ Busca de vagas a cada {INTERVALO_BUSCA_SEGUNDOS // 60} minutos")
+    print(f"💬 Checagem de comandos a cada {INTERVALO_ENTRE_ENVIOS_SEGUNDOS} segundos")
+    print("🔴 Para parar o bot, pressione Ctrl+C\n")
 
-    try:
-        garantir_primeira_ativacao(cursor, conn)
-        configurar_comandos_bot()
+    garantir_primeira_ativacao(cursor, conn)
+    configurar_comandos_bot()
 
-        checar_novos_comandos(cursor, conn)
+    while executando:
+        try:
+            checar_novos_comandos(cursor, conn)
 
-        if busca_e_devida(cursor):
-            print(f"\n{'='*50}")
-            print(f"🔄 BUSCA - {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
-            print(f"{'='*50}")
+            if busca_e_devida(cursor):
+                print(f"\n{'='*50}")
+                print(f"🔄 BUSCA - {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+                print(f"{'='*50}")
 
-            total = buscar_vagas_gupy(cursor, conn)
-            if total == 0:
-                print("📭 Nenhuma vaga nova encontrada nesta busca.")
+                total = buscar_vagas_gupy(cursor, conn)
+                if total == 0:
+                    print("📭 Nenhuma vaga nova encontrada nesta busca.")
 
-            registrar_ultima_busca(cursor, conn)
-        else:
-            print("⏭️  Ainda não é hora de nova busca de vagas, só comandos foram checados.")
+                registrar_ultima_busca(cursor, conn)
 
-        if limpeza_e_devida(cursor):
-            limpar_vagas_antigas(cursor, conn)
-            registrar_ultima_limpeza(cursor, conn)
+            if limpeza_e_devida(cursor):
+                limpar_vagas_antigas(cursor, conn)
+                registrar_ultima_limpeza(cursor, conn)
 
-    except Exception as e:
-        print(f"❌ Erro crítico na execução: {e}")
+            time.sleep(INTERVALO_ENTRE_ENVIOS_SEGUNDOS)
 
-    finally:
-        conn.close()
-        enviar_banco_para_r2()
+        except Exception as e:
+            print(f"❌ Erro crítico no loop principal: {e}")
+            time.sleep(60)
+
+    conn.close()
 
 
 if __name__ == '__main__':
