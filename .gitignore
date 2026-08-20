@@ -1,0 +1,13 @@
+# Variáveis de ambiente
+.env
+
+# Banco de dados local (criado em tempo de execução por app.py)
+vagas_gupy.db
+
+# Ambientes virtuais
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.pyc
