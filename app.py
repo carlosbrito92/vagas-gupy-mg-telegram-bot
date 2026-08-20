@@ -29,6 +29,20 @@ TRADUCAO_TIPO_VAGA = {
     "vacancy_type_freelancer": "Freelancer"
 }
 
+# A API da Gupy só filtra por ESTADO, não por cidade.
+# Por isso buscamos "Minas Gerais" e filtramos a cidade no código
+# usando essa lista (case-insensitive, sem acento é opcional).
+CIDADES_ALVO = [
+    "belo horizonte",
+    "contagem",
+    "betim",
+    "nova lima",
+    "santa luzia",
+    "ribeirão das neves",
+    "sabará",
+    "vespasiano",
+]
+
 # Flag para controle de interrupção
 executando = True
 
@@ -37,7 +51,6 @@ def enviar_mensagem_telegram(mensagem):
     """Envia uma mensagem simples para o Telegram"""
     if not TOKEN or not CHAT_ID:
         return
-    
     try:
         url_tg = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
         payload_tg = {"chat_id": CHAT_ID, "text": mensagem, "parse_mode": "HTML"}
@@ -82,52 +95,56 @@ def iniciar_banco():
     conn.commit()
     return conn, cursor
 
-# --- 5. MOTOR DE BUSCA DA GUPY (APENAS SÃO PAULO) ---
+def cidade_e_alvo(cidade):
+    """Verifica se a cidade da vaga está na região metropolitana de BH"""
+    if not cidade:
+        return False
+    cidade_normalizada = cidade.strip().lower()
+    return any(alvo in cidade_normalizada for alvo in CIDADES_ALVO)
+
+# --- 5. MOTOR DE BUSCA DA GUPY (MINAS GERAIS, FILTRADO PARA BH E REGIÃO) ---
 def buscar_vagas_gupy():
     print("🚀 Iniciando varredura detalhada na API da Gupy...")
     conn, cursor = iniciar_banco()
-    
+
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/plain, */*',
         'Origin': 'https://portal.gupy.io'
     }
-    
     url_api = "https://employability-portal.gupy.io/api/v1/jobs"
-    
-    # Apenas filtro para São Paulo
+
+    # A API filtra por estado inteiro (Minas Gerais). A cidade é filtrada
+    # depois, dentro do loop, usando cidade_e_alvo().
     filtros_de_busca = [
-        {"nome": "SÃO PAULO", "params": {'state': 'São Paulo', 'limit': 10}}
+        {"nome": "BELO HORIZONTE E REGIÃO", "params": {'state': 'Minas Gerais', 'limit': 10}}
     ]
 
     vagas_enviadas_ciclo = 0
 
     for filtro in filtros_de_busca:
         print(f"\n🔎 Varrendo vagas para: {filtro['nome']}...")
-        
         vagas_velhas = 0
         LIMITE_VELHAS = 20
         PAGINA_MAXIMA = 35
-        
+
         for pagina in range(1, PAGINA_MAXIMA + 1):
             if not executando:
                 conn.close()
                 return
-            
+
             print(f"   ⏳ Lendo página {pagina} de {PAGINA_MAXIMA}...")
-            
             offset = (pagina - 1) * 10
-            
             params_atuais = filtro['params'].copy()
             params_atuais['offset'] = offset
-            
+
             try:
                 resposta = requests.get(url_api, headers=headers, params=params_atuais, timeout=15)
-                
-                if resposta.status_code != 200: 
+
+                if resposta.status_code != 200:
                     print(f"🛑 Erro de conexão. Código HTTP: {resposta.status_code}")
                     break
-                
+
                 try:
                     dados_json = resposta.json()
                 except Exception:
@@ -135,7 +152,7 @@ def buscar_vagas_gupy():
                     break
 
                 lista_vagas = dados_json.get('data', [])
-                if not lista_vagas: 
+                if not lista_vagas:
                     print("   🔚 Não há mais vagas disponíveis nesta busca.")
                     break
 
@@ -143,25 +160,29 @@ def buscar_vagas_gupy():
                     if not executando:
                         conn.close()
                         return
-                    
+
                     link_vaga = vaga.get('jobUrl', '')
-                    if not link_vaga: continue
-                    
+                    if not link_vaga:
+                        continue
+
+                    cidade = vaga.get('city', '')
+                    estado = vaga.get('state', 'Minas Gerais')
+
+                    # Filtro de cidade: pula vagas fora da região de BH
+                    # (ex.: Uberlândia, Juiz de Fora, etc.)
+                    if not cidade_e_alvo(cidade):
+                        continue
+
                     titulo = vaga.get('name', 'Título Indisponível')
                     empresa = vaga.get('careerPageName', 'Empresa não informada')
-                    
-                    # Localização específica
-                    cidade = vaga.get('city', 'São Paulo')
-                    estado = vaga.get('state', 'São Paulo')
                     local = f"{cidade} - {estado}"
-                    
                     modelo = TRADUCAO_MODELO.get(vaga.get('workplaceType', ''), "Não informado")
                     tipo = TRADUCAO_TIPO_VAGA.get(vaga.get('type', ''), "Outros")
                     pcd = "Sim" if vaga.get('disabilities') else "Não informado"
 
                     data_iso = vaga.get('publishedDate', '')
                     try:
-                        data_limpa = data_iso.split('.')[0] 
+                        data_limpa = data_iso.split('.')[0]
                         data_utc = datetime.strptime(data_limpa, "%Y-%m-%dT%H:%M:%S")
                         data_brt = data_utc - timedelta(hours=3)
                         data_f = data_brt.strftime("%d/%m/%Y")
@@ -172,40 +193,41 @@ def buscar_vagas_gupy():
                     cursor.execute('SELECT 1 FROM vagas_enviadas WHERE link = ?', (link_vaga,))
                     if cursor.fetchone():
                         vagas_velhas += 1
-                        if vagas_velhas >= LIMITE_VELHAS: 
+                        if vagas_velhas >= LIMITE_VELHAS:
                             break
+                        continue
                     else:
-                        vagas_velhas = 0 
-                        cursor.execute('INSERT INTO vagas_enviadas VALUES (?, ?, ?)', (link_vaga, data_f, titulo))
-                        conn.commit()
-                        vagas_enviadas_ciclo += 1
-                        
-                        titulo_mensagem = f"🎯 <b>VAGA GUPY - {filtro['nome']}!</b>"
-                        mensagem = f"{titulo_mensagem}\n\n" \
-                                   f"💼 <b>Vaga:</b> {titulo}\n" \
-                                   f"🏢 <b>Empresa:</b> {empresa}\n" \
-                                   f"📍 <b>Local:</b> {local}\n" \
-                                   f"💻 <b>Modelo:</b> {modelo}\n" \
-                                   f"📄 <b>Tipo:</b> {tipo}\n" \
-                                   f"♿ <b>PCD:</b> {pcd}\n" \
-                                   f"📅 <b>Data:</b> {data_f} às {hora_f}\n\n" \
-                                   f"🔗 <a href='{link_vaga}'>Clique aqui para se candidatar na plataforma</a>"
+                        vagas_velhas = 0
 
-                        url_tg = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-                        payload_tg = {"chat_id": CHAT_ID, "text": mensagem, "parse_mode": "HTML", "disable_web_page_preview": True}
-                        
-                        try:
-                            r = requests.post(url_tg, json=payload_tg, timeout=10)
-                            if r.status_code == 200:
-                                print(f"✅ Enviada ({filtro['nome']}): {titulo[:40]}...")
-                        except Exception as e:
-                            print(f"❌ Erro ao enviar para o Telegram: {e}")
-                        
-                        time.sleep(2)
-                
+                    cursor.execute('INSERT INTO vagas_enviadas VALUES (?, ?, ?)', (link_vaga, data_f, titulo))
+                    conn.commit()
+                    vagas_enviadas_ciclo += 1
+
+                    titulo_mensagem = f"🎯 <b>VAGA GUPY - {filtro['nome']}!</b>"
+                    mensagem = f"{titulo_mensagem}\n\n" \
+                               f"💼 <b>Vaga:</b> {titulo}\n" \
+                               f"🏢 <b>Empresa:</b> {empresa}\n" \
+                               f"📍 <b>Local:</b> {local}\n" \
+                               f"💻 <b>Modelo:</b> {modelo}\n" \
+                               f"📄 <b>Tipo:</b> {tipo}\n" \
+                               f"♿ <b>PCD:</b> {pcd}\n" \
+                               f"📅 <b>Data:</b> {data_f} às {hora_f}\n\n" \
+                               f"🔗 <a href='{link_vaga}'>Clique aqui para se candidatar na plataforma</a>"
+
+                    url_tg = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+                    payload_tg = {"chat_id": CHAT_ID, "text": mensagem, "parse_mode": "HTML", "disable_web_page_preview": True}
+                    try:
+                        r = requests.post(url_tg, json=payload_tg, timeout=10)
+                        if r.status_code == 200:
+                            print(f"✅ Enviada ({cidade}): {titulo[:40]}...")
+                    except Exception as e:
+                        print(f"❌ Erro ao enviar para o Telegram: {e}")
+
+                    time.sleep(2)
+
                 if vagas_velhas >= LIMITE_VELHAS:
                     print(f"   🛑 Muitas vagas antigas ({LIMITE_VELHAS}). Pulando para a próxima busca.")
-                    break 
+                    break
 
             except Exception as e:
                 print(f"⚠️ Erro de execução: {e}")
@@ -218,43 +240,39 @@ def buscar_vagas_gupy():
 # --- 6. LOOP PRINCIPAL COM EXECUÇÃO CONTÍNUA ---
 def main():
     global executando
-    
+
     if not TOKEN or not CHAT_ID:
         print("❌ ERRO: Token do Telegram ou Chat ID não encontrados no arquivo .env!")
         return
-    
+
     print("🤖 Bot de vagas Gupy iniciado!")
-    print("📌 Monitorando apenas vagas para o estado de São Paulo")
+    print("📌 Monitorando vagas para Belo Horizonte e região metropolitana")
     print("⏰ O bot ficará em execução contínua, verificando novas vagas a cada 5 minutos")
     print("🔴 Para parar o bot, pressione Ctrl+C\n")
-    
+
     # Envia mensagem de inicialização
     enviar_mensagem_retorno()
-    
+
     ciclo = 0
-    
     while executando:
         ciclo += 1
         print(f"\n{'='*50}")
         print(f"🔄 CICLO #{ciclo} - {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
         print(f"{'='*50}")
-        
+
         try:
             vagas_enviadas = buscar_vagas_gupy()
-            
             if vagas_enviadas == 0:
                 print("📭 Nenhuma vaga nova encontrada neste ciclo.")
-            
-            # Aguarda 5 minutos antes da próxima verificação
+
             print(f"\n⏳ Aguardando 5 minutos até a próxima verificação...")
             for _ in range(300):  # 300 segundos = 5 minutos
                 if not executando:
                     break
                 time.sleep(1)
-                
+
         except Exception as e:
             print(f"❌ Erro crítico no ciclo #{ciclo}: {e}")
-            # Aguarda 1 minuto antes de tentar novamente em caso de erro
             time.sleep(60)
 
 if __name__ == '__main__':
