@@ -193,9 +193,44 @@ intervalo entre buscas (5 min por padrão) e do polling de comandos do Telegram
 execuções.
 
 Isso também significa que ele só continua rodando enquanto o processo existir.
-Pra manter isso de pé 24/7 sem depender do seu terminal aberto, veja
-[`DEPLOY.md`](DEPLOY.md) — VM gratuita da Oracle Cloud, rodando o bot como
-serviço `systemd` (reinicia sozinho se cair).
+Existem duas formas de manter isso de pé, dependendo do quanto você precisa:
+
+### Rodar sem terminal visível (rápido, mas não sobrevive a desligar a máquina)
+
+Se você só quer soltar o bot em segundo plano numa máquina que já vai ficar
+ligada (seu próprio PC, uma VM que você já tem acesso, etc.), sem precisar
+manter uma janela de terminal aberta:
+
+```bash
+nohup python app.py > bot.log 2>&1 &
+```
+
+Isso desacopla o processo do terminal — pode fechar a janela que ele continua
+rodando. Pra acompanhar o que está acontecendo:
+
+```bash
+tail -f bot.log
+```
+
+Pra parar o bot:
+
+```bash
+ps aux | grep app.py    # encontra o PID (número do processo)
+kill <PID>
+```
+
+**Limitações:** se a máquina reiniciar ou desligar, o processo morre e não
+volta sozinho — precisa rodar o `nohup` de novo manualmente. Em ambientes
+com timeout de inatividade (ex: GitHub Codespaces), a máquina inteira pode
+ser pausada depois de um tempo sem uso no editor/terminal, o que também
+derruba o processo — `nohup` não evita isso.
+
+### Deploy de verdade, 24/7, com auto-restart
+
+Pra rodar continuamente de forma confiável — sobrevivendo a reinícios da
+máquina e voltando sozinho se o processo cair — veja
+[`DEPLOY.md`](DEPLOY.md): VM gratuita da Oracle Cloud, rodando o bot como
+serviço `systemd`.
 
 > **Nota histórica:** este projeto teve, por um período curto, uma versão
 > reescrita para rodar como execução única disparada por cron (pensada para
